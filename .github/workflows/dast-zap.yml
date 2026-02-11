@@ -1,0 +1,65 @@
+name: "DAST - OWASP ZAP Scan"
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  zap-scan:
+    name: OWASP ZAP Dynamic Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install Flask dependencies
+      run: |
+        pip install -r requirements.txt
+
+    - name: Start Flask application
+      run: |
+        python app.py &
+        echo $! > flask.pid
+        sleep 5
+        curl -f http://localhost:5000/ || (echo "Flask failed to start" && exit 1)
+
+    - name: Run OWASP ZAP Baseline Scan
+      uses: zaproxy/action-baseline@v0.12.0
+      with:
+        target: 'http://localhost:5000'
+        rules_file_name: '.zap/rules.tsv'
+        cmd_options: '-a -j'
+        allow_issue_writing: false
+
+    - name: Stop Flask application
+      if: always()
+      run: |
+        if [ -f flask.pid ]; then
+          kill $(cat flask.pid) || true
+        fi
+
+    - name: Upload ZAP Report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: zap-scan-report
+        path: |
+          report_html.html
+          report_json.json
+          report_md.md
+
+    - name: Generate Scan Summary
+      if: always()
+      run: |
+        echo "## 🛡️ OWASP ZAP DAST Scan Complete" >> $GITHUB_STEP_SUMMARY
+        echo "Target: http://localhost:5000" >> $GITHUB_STEP_SUMMARY
+        echo "Check artifacts for detailed reports" >> $GITHUB_STEP_SUMMARY

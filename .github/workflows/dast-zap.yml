@@ -39,6 +39,7 @@ jobs:
         rules_file_name: '.zap/rules.tsv'
         cmd_options: '-a -j'
         allow_issue_writing: false
+        artifact_name: 'zap-baseline-report'
 
     - name: Stop Flask application
       if: always()

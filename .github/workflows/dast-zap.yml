@@ -38,8 +38,6 @@ jobs:
         target: 'http://localhost:5000'
         rules_file_name: '.zap/rules.tsv'
         cmd_options: '-a -j'
-        allow_issue_writing: false
-        artifact_name: 'zap-baseline-report'
 
     - name: Stop Flask application
       if: always()
@@ -48,19 +46,9 @@ jobs:
           kill $(cat flask.pid) || true
         fi
 
-    - name: Upload ZAP Report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: zap-scan-report
-        path: |
-          report_html.html
-          report_json.json
-          report_md.md
-
     - name: Generate Scan Summary
       if: always()
       run: |
         echo "## 🛡️ OWASP ZAP DAST Scan Complete" >> $GITHUB_STEP_SUMMARY
         echo "Target: http://localhost:5000" >> $GITHUB_STEP_SUMMARY
-        echo "Check artifacts for detailed reports" >> $GITHUB_STEP_SUMMARY
+        echo "ZAP reports are available in the workflow artifacts" >> $GITHUB_STEP_SUMMARY

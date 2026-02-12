@@ -179,14 +179,27 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Check if there are any differences between branches
+          comparison="$(gh api "/repos/$REPO/compare/$BASE...proposed-fixes" --jq '.ahead_by')"
+
+          if [ "$comparison" -eq 0 ]; then
+            echo "⚠️  No commits on proposed-fixes branch (Copilot Autofix may be unavailable)"
+            echo "Skipping PR creation - no changes to propose"
+            exit 0
+          fi
+
+          echo "Found $comparison commit(s) to propose"
+
           pr_url="$(gh pr list --repo "$REPO" --head proposed-fixes --base "$BASE" --json url --jq '.[0].url' || true)"
 
           if [ -z "$pr_url" ]; then
+            echo "Creating new PR..."
             gh pr create --repo "$REPO" \
               --head proposed-fixes --base "$BASE" \
               --title "Proposed fixes (Copilot Autofix)" \
               --body "Automated PR containing Copilot Autofix commits for current CodeQL/code-scanning alerts."
           else
+            echo "Updating existing PR: $pr_url"
             gh pr edit "$pr_url" \
               --title "Proposed fixes (Copilot Autofix)" \
               --body "Updated automated PR with Copilot Autofix commits for current CodeQL/code-scanning alerts."

@@ -154,7 +154,9 @@ jobs:
               2>&1 | tee autofix-debug-logs/02-alert-${n}-check-existing.txt)"
 
             existing_http_code="$(echo "$existing_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
-            existing_status="$(echo "$existing_response" | grep "^{" | jq -r '.status // empty' 2>/dev/null)"
+            # Extract JSON body (everything after the blank line that separates headers from body)
+            existing_body="$(echo "$existing_response" | sed -n '/^$/,$ p' | grep "{" | head -1)"
+            existing_status="$(echo "$existing_body" | jq -r '.status // empty' 2>/dev/null || echo "")"
 
             echo "Existing fix check: HTTP $existing_http_code, status=$existing_status" | tee -a autofix-debug-logs/api-calls.log
 
@@ -224,8 +226,10 @@ jobs:
                   "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
                   2>&1 | tee autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt || echo "{\"status\":\"error\"}")"
 
-                status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
-                status="$(echo "$status_response" | grep "^{" | jq -r '.status // "error"' 2>/dev/null || echo "error")"
+                status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $3}' || echo "000")"
+                # Extract JSON body (everything after blank line)
+                status_body="$(echo "$status_response" | sed -n '/^$/,$ p' | grep "{" | head -1)"
+                status="$(echo "$status_body" | jq -r '.status // "error"' 2>/dev/null || echo "error")"
 
                 echo "  Poll $i/12: HTTP $status_http_code, status=$status" | tee -a autofix-debug-logs/api-calls.log
 

@@ -125,10 +125,10 @@ jobs:
           http_code="$(echo "$alerts" | grep "^HTTP_CODE:" | cut -d: -f2)"
           echo "Response HTTP code: $http_code" | tee -a autofix-debug-logs/api-calls.log
 
-          # Filter to high-value alerts only (error/warning severity) and limit to 3
+          # Filter to high-value alerts only (error/warning severity)
           # Sort by number (ascending) to prioritize lower-numbered alerts first
-          # This avoids rate limiting (10 requests per window) and focuses on real security issues
-          nums="$(echo "$alerts_json" | jq -r '.[] | select(.rule.severity=="error" or .rule.severity=="warning") | .number' 2>/dev/null | sort -n | head -n 3 || echo "")"
+          # Process until we get 3 successful fixes (or hit max 15 attempts to avoid rate limiting)
+          nums="$(echo "$alerts_json" | jq -r '.[] | select(.rule.severity=="error" or .rule.severity=="warning") | .number' 2>/dev/null | sort -n || echo "")"
 
           if [ -z "$nums" ]; then
             echo "⚠️  No high-severity code scanning alerts found (error/warning level)." | tee -a autofix-debug-logs/api-calls.log
@@ -138,10 +138,19 @@ jobs:
           fi
 
           total_alerts="$(echo "$alerts_json" | jq -r '.[].number' 2>/dev/null | wc -l)"
-          filtered_count="$(echo "$nums" | wc -w)"
-          echo "Found $total_alerts total alert(s), processing top $filtered_count high-severity alert(s)" | tee -a autofix-debug-logs/api-calls.log
+          echo "Found $total_alerts total alert(s), will process until 3 successful fixes or max 15 attempts" | tee -a autofix-debug-logs/api-calls.log
+
+          successful_fixes=0
+          attempts=0
 
           for n in $nums; do
+            attempts=$((attempts + 1))
+
+            # Stop if we have 3 successful fixes or tried 15 alerts (rate limit safety)
+            if [ "$successful_fixes" -ge 3 ] || [ "$attempts" -gt 15 ]; then
+              echo "Stopping: $successful_fixes successful fixes after $attempts attempts" | tee -a autofix-debug-logs/api-calls.log
+              break
+            fi
             echo "" | tee -a autofix-debug-logs/api-calls.log
             echo "=== Processing Alert #$n ===" | tee -a autofix-debug-logs/api-calls.log
 
@@ -268,11 +277,15 @@ jobs:
 
               if [ "$commit_http_code" = "200" ] || [ "$commit_http_code" = "201" ]; then
                 echo "✅ Successfully committed autofix for alert #$n to proposed-fixes branch" | tee -a autofix-debug-logs/api-calls.log
+                successful_fixes=$((successful_fixes + 1))
               else
                 echo "⚠️  Failed to commit autofix for alert #$n (HTTP $commit_http_code)" | tee -a autofix-debug-logs/api-calls.log
               fi
             fi
           done
+
+          echo "" | tee -a autofix-debug-logs/api-calls.log
+          echo "📊 Summary: $successful_fixes successful fixes out of $attempts alerts processed" | tee -a autofix-debug-logs/api-calls.log
 
           echo "" | tee -a autofix-debug-logs/api-calls.log
           echo "✅ Autofix processing complete" | tee -a autofix-debug-logs/api-calls.log

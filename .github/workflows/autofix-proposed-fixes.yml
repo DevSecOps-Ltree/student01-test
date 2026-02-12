@@ -17,6 +17,8 @@ permissions:
   # Push branch + create PR
   contents: write
   pull-requests: write
+  # Access GitHub Models API
+  models: read
 
 concurrency:
   group: autofix-${{ github.event.workflow_run.head_sha }}

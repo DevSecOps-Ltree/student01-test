@@ -146,16 +146,16 @@ jobs:
 
             # Step 1: Check if autofix already exists (avoids unnecessary POSTs)
             echo "API Call: GET /repos/$REPO/code-scanning/alerts/$n/autofix (check existing)" | tee -a autofix-debug-logs/api-calls.log
-            existing_response="$(timeout 10s curl -v \
+            timeout 10s curl -v \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
-              2>&1 | tee autofix-debug-logs/02-alert-${n}-check-existing.txt)"
+              > autofix-debug-logs/02-alert-${n}-check-existing.txt 2>&1
 
-            existing_http_code="$(echo "$existing_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
-            # Extract JSON body (everything after the blank line that separates headers from body)
-            existing_body="$(echo "$existing_response" | sed -n '/^$/,$ p' | grep "{" | head -1)"
+            # Read from file to preserve newlines
+            existing_http_code="$(grep "< HTTP" autofix-debug-logs/02-alert-${n}-check-existing.txt | tail -1 | awk '{print $NF}')"
+            existing_body="$(grep "^{" autofix-debug-logs/02-alert-${n}-check-existing.txt | head -1)"
             existing_status="$(echo "$existing_body" | jq -r '.status // empty' 2>/dev/null || echo "")"
 
             echo "Existing fix check: HTTP $existing_http_code, status=$existing_status" | tee -a autofix-debug-logs/api-calls.log
@@ -166,7 +166,7 @@ jobs:
               status="complete"
             # If 404 with "No suggested fix found", this alert isn't supported - skip it
             elif [ "$existing_http_code" = "404" ]; then
-              if echo "$existing_response" | grep -q "No suggested fix found"; then
+              if grep -q "No suggested fix found" autofix-debug-logs/02-alert-${n}-check-existing.txt; then
                 echo "ℹ️  No suggested fix available for alert #$n (not all CodeQL findings have autofix support) - skipping" | tee -a autofix-debug-logs/api-calls.log
                 continue
               fi

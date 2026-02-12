@@ -156,8 +156,8 @@ jobs:
 
             # Read from file to preserve newlines (tr -d removes curl's \r line endings)
             existing_http_code="$(grep "< HTTP" autofix-debug-logs/02-alert-${n}-check-existing.txt | tr -d '\r' | tail -1 | awk '{print $NF}')"
-            # Get the LAST line starting with { (actual JSON body, not curl's debug lines)
-            existing_body="$(grep "^{" autofix-debug-logs/02-alert-${n}-check-existing.txt | tr -d '\r' | tail -1)"
+            # Extract JSON body (everything after "Connection...left intact" line)
+            existing_body="$(awk '/Connection.*left intact/{flag=1; next} flag' autofix-debug-logs/02-alert-${n}-check-existing.txt)"
             existing_status="$(echo "$existing_body" | jq -r '.status // empty' 2>/dev/null || echo "")"
 
             echo "Existing fix check: HTTP $existing_http_code, status=$existing_status" | tee -a autofix-debug-logs/api-calls.log
@@ -229,8 +229,8 @@ jobs:
                   > autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt 2>&1 || echo "{\"status\":\"error\"}" > autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt
 
                 status_http_code="$(grep "< HTTP" autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt | tr -d '\r' | tail -1 | awk '{print $NF}' || echo "000")"
-                # Get the LAST line starting with { (actual JSON body, not curl's debug lines)
-                status_body="$(grep "^{" autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt | tr -d '\r' | tail -1)"
+                # Extract JSON body (everything after "Connection...left intact" line)
+                status_body="$(awk '/Connection.*left intact/{flag=1; next} flag' autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt)"
                 status="$(echo "$status_body" | jq -r '.status // "error"' 2>/dev/null || echo "error")"
 
                 echo "  Poll $i/12: HTTP $status_http_code, status=$status" | tee -a autofix-debug-logs/api-calls.log

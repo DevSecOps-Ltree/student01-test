@@ -430,7 +430,8 @@ jobs:
           # Check if there are local commits to push
           if git log origin/proposed-fixes..proposed-fixes --oneline 2>/dev/null | grep -q .; then
             echo "Pushing AI-generated fixes to remote..."
-            git push origin proposed-fixes
+            # Use force-with-lease since we reset the branch at the start
+            git push --force-with-lease origin proposed-fixes
           else
             echo "No local commits to push (Copilot API handled it)"
           fi

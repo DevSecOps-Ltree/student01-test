@@ -126,8 +126,9 @@ jobs:
           echo "Response HTTP code: $http_code" | tee -a autofix-debug-logs/api-calls.log
 
           # Filter to high-value alerts only (error/warning severity) and limit to 3
+          # Sort by number (ascending) to prioritize lower-numbered alerts first
           # This avoids rate limiting (10 requests per window) and focuses on real security issues
-          nums="$(echo "$alerts_json" | jq -r '.[] | select(.rule.severity=="error" or .rule.severity=="warning") | .number' 2>/dev/null | head -n 3 || echo "")"
+          nums="$(echo "$alerts_json" | jq -r '.[] | select(.rule.severity=="error" or .rule.severity=="warning") | .number' 2>/dev/null | sort -n | head -n 3 || echo "")"
 
           if [ -z "$nums" ]; then
             echo "⚠️  No high-severity code scanning alerts found (error/warning level)." | tee -a autofix-debug-logs/api-calls.log

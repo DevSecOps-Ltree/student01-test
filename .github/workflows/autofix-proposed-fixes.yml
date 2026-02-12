@@ -153,9 +153,9 @@ jobs:
               "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
               > autofix-debug-logs/02-alert-${n}-check-existing.txt 2>&1
 
-            # Read from file to preserve newlines
-            existing_http_code="$(grep "< HTTP" autofix-debug-logs/02-alert-${n}-check-existing.txt | tail -1 | awk '{print $NF}')"
-            existing_body="$(grep "^{" autofix-debug-logs/02-alert-${n}-check-existing.txt | head -1)"
+            # Read from file to preserve newlines (tr -d removes curl's \r line endings)
+            existing_http_code="$(grep "< HTTP" autofix-debug-logs/02-alert-${n}-check-existing.txt | tr -d '\r' | tail -1 | awk '{print $NF}')"
+            existing_body="$(grep "^{" autofix-debug-logs/02-alert-${n}-check-existing.txt | tr -d '\r' | head -1)"
             existing_status="$(echo "$existing_body" | jq -r '.status // empty' 2>/dev/null || echo "")"
 
             echo "Existing fix check: HTTP $existing_http_code, status=$existing_status" | tee -a autofix-debug-logs/api-calls.log
@@ -176,20 +176,20 @@ jobs:
 
               # Step 2: Request autofix generation
               echo "API Call: POST /repos/$REPO/code-scanning/alerts/$n/autofix" | tee -a autofix-debug-logs/api-calls.log
-              autofix_request_response="$(timeout 30s curl -v -X POST \
+              timeout 30s curl -v -X POST \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Accept: application/vnd.github+json" \
                 "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
-                2>&1 | tee autofix-debug-logs/03-alert-${n}-autofix-request.txt || echo "FAILED")"
+                > autofix-debug-logs/03-alert-${n}-autofix-request.txt 2>&1 || echo "FAILED" > autofix-debug-logs/03-alert-${n}-autofix-request.txt
 
-              autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
+              autofix_http_code="$(grep "< HTTP" autofix-debug-logs/03-alert-${n}-autofix-request.txt | tr -d '\r' | tail -1 | awk '{print $NF}')"
               echo "Autofix request HTTP code: $autofix_http_code" | tee -a autofix-debug-logs/api-calls.log
 
               # Handle rate limiting (403 with rate limit message)
               if [ "$autofix_http_code" = "403" ]; then
-                if echo "$autofix_request_response" | grep -q "rate limit exceeded"; then
-                  rate_reset="$(echo "$autofix_request_response" | grep -i "x-ratelimit-reset:" | awk '{print $3}' | tr -d '\r')"
+                if grep -q "rate limit exceeded" autofix-debug-logs/03-alert-${n}-autofix-request.txt; then
+                  rate_reset="$(grep -i "x-ratelimit-reset:" autofix-debug-logs/03-alert-${n}-autofix-request.txt | awk '{print $NF}' | tr -d '\r')"
                   if [ -n "$rate_reset" ]; then
                     now="$(date +%s)"
                     sleep_time=$((rate_reset - now + 2))
@@ -198,19 +198,19 @@ jobs:
                       sleep "$sleep_time"
                       # Retry once after rate limit
                       echo "Retrying after rate limit..." | tee -a autofix-debug-logs/api-calls.log
-                      autofix_request_response="$(timeout 30s curl -v -X POST \
+                      timeout 30s curl -v -X POST \
                         -H "Authorization: Bearer $GH_TOKEN" \
                         -H "X-GitHub-Api-Version: 2022-11-28" \
                         -H "Accept: application/vnd.github+json" \
                         "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
-                        2>&1 | tee -a autofix-debug-logs/03-alert-${n}-autofix-request.txt || echo "FAILED")"
-                      autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
+                        >> autofix-debug-logs/03-alert-${n}-autofix-request.txt 2>&1 || echo "FAILED" >> autofix-debug-logs/03-alert-${n}-autofix-request.txt
+                      autofix_http_code="$(grep "< HTTP" autofix-debug-logs/03-alert-${n}-autofix-request.txt | tr -d '\r' | tail -1 | awk '{print $NF}')"
                     fi
                   fi
                 fi
               fi
 
-              if echo "$autofix_request_response" | grep -q "FAILED" || [ "$autofix_http_code" != "200" ]; then
+              if grep -q "FAILED" autofix-debug-logs/03-alert-${n}-autofix-request.txt || [ "$autofix_http_code" != "200" ] && [ "$autofix_http_code" != "201" ]; then
                 echo "⚠️  Autofix request failed for alert #$n (HTTP $autofix_http_code)" | tee -a autofix-debug-logs/api-calls.log
                 continue
               fi
@@ -219,16 +219,15 @@ jobs:
               status="unknown"
               for i in $(seq 1 12); do
                 echo "API Call: GET /repos/$REPO/code-scanning/alerts/$n/autofix (poll $i/12)" | tee -a autofix-debug-logs/api-calls.log
-                status_response="$(timeout 10s curl -v \
+                timeout 10s curl -v \
                   -H "Authorization: Bearer $GH_TOKEN" \
                   -H "X-GitHub-Api-Version: 2022-11-28" \
                   -H "Accept: application/vnd.github+json" \
                   "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
-                  2>&1 | tee autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt || echo "{\"status\":\"error\"}")"
+                  > autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt 2>&1 || echo "{\"status\":\"error\"}" > autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt
 
-                status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $NF}' || echo "000")"
-                # Extract JSON body (everything after blank line)
-                status_body="$(echo "$status_response" | sed -n '/^$/,$ p' | grep "{" | head -1)"
+                status_http_code="$(grep "< HTTP" autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt | tr -d '\r' | tail -1 | awk '{print $NF}' || echo "000")"
+                status_body="$(grep "^{" autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt | tr -d '\r' | head -1)"
                 status="$(echo "$status_body" | jq -r '.status // "error"' 2>/dev/null || echo "error")"
 
                 echo "  Poll $i/12: HTTP $status_http_code, status=$status" | tee -a autofix-debug-logs/api-calls.log
@@ -252,16 +251,16 @@ jobs:
             # Step 4: Commit autofix to proposed-fixes branch
             if [ "$status" = "complete" ]; then
               echo "API Call: POST /repos/$REPO/code-scanning/alerts/$n/autofix/commits" | tee -a autofix-debug-logs/api-calls.log
-              commit_response="$(timeout 30s curl -v -X POST \
+              timeout 30s curl -v -X POST \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Accept: application/vnd.github+json" \
                 -H "Content-Type: application/json" \
                 -d "{\"target_ref\":\"proposed-fixes\"}" \
                 "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix/commits" \
-                2>&1 | tee autofix-debug-logs/05-alert-${n}-commit.txt || echo "FAILED")"
+                > autofix-debug-logs/05-alert-${n}-commit.txt 2>&1 || echo "FAILED" > autofix-debug-logs/05-alert-${n}-commit.txt
 
-              commit_http_code="$(echo "$commit_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
+              commit_http_code="$(grep "< HTTP" autofix-debug-logs/05-alert-${n}-commit.txt | tr -d '\r' | tail -1 | awk '{print $NF}')"
               echo "Commit HTTP code: $commit_http_code" | tee -a autofix-debug-logs/api-calls.log
 
               if [ "$commit_http_code" = "200" ] || [ "$commit_http_code" = "201" ]; then

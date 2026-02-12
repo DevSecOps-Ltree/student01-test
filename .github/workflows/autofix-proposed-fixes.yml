@@ -100,6 +100,8 @@ jobs:
           git config user.email "autofix-bot@users.noreply.github.com"
 
       - name: Generate + commit Copilot Autofix for open code scanning alerts
+        continue-on-error: true
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -107,39 +109,62 @@ jobs:
           set -euo pipefail
 
           # List open code scanning alerts (CodeQL lives here)
-          alerts="$(gh api -H "X-GitHub-Api-Version: 2022-11-28" \
-            "/repos/$REPO/code-scanning/alerts?state=open&per_page=100")"
+          alerts="$(timeout 30s gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/$REPO/code-scanning/alerts?state=open&per_page=100" 2>/dev/null || echo "[]")"
 
-          nums="$(echo "$alerts" | jq -r '.[].number')"
+          nums="$(echo "$alerts" | jq -r '.[].number' 2>/dev/null || echo "")"
           if [ -z "$nums" ]; then
-            echo "No open code scanning alerts. Exiting."
+            echo "⚠️  No open code scanning alerts found or API unavailable."
+            echo "Copilot Autofix requires GitHub Advanced Security and may not be available for this repository."
             exit 0
           fi
 
+          echo "Found $(echo "$nums" | wc -w) alert(s) to process"
+
           for n in $nums; do
-            echo "=== Alert #$n ==="
+            echo "=== Processing Alert #$n ==="
 
             # Request autofix (no-op if unsupported)
-            gh api -X POST -H "X-GitHub-Api-Version: 2022-11-28" \
-              "/repos/$REPO/code-scanning/alerts/$n/autofix" >/dev/null || true
+            echo "Requesting autofix for alert #$n..."
+            timeout 30s gh api -X POST -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/repos/$REPO/code-scanning/alerts/$n/autofix" >/dev/null 2>&1 || {
+              echo "⚠️  Autofix request failed or timed out for alert #$n (API may be unavailable)"
+              continue
+            }
 
-            # Poll status (~5 mins max)
+            # Poll status (~2 mins max with timeouts)
             status="unknown"
-            for i in $(seq 1 30); do
-              status="$(gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            for i in $(seq 1 12); do
+              status="$(timeout 10s gh api -H "X-GitHub-Api-Version: 2022-11-28" \
                 "/repos/$REPO/code-scanning/alerts/$n/autofix" --jq '.status' 2>/dev/null || echo "unavailable")"
-              echo "status=$status"
-              if [ "$status" = "complete" ] || [ "$status" = "failed" ] || [ "$status" = "unavailable" ]; then
+              echo "  Poll $i/12: status=$status"
+
+              if [ "$status" = "complete" ]; then
+                echo "✅ Autofix complete for alert #$n"
+                break
+              elif [ "$status" = "failed" ]; then
+                echo "❌ Autofix failed for alert #$n"
+                break
+              elif [ "$status" = "unavailable" ] || [ "$status" = "timeout" ]; then
+                echo "⚠️  Autofix unavailable or timed out for alert #$n"
                 break
               fi
+
               sleep 10
             done
 
             # Commit autofix to proposed-fixes (no-op if no fix available)
-            gh api -X POST -H "X-GitHub-Api-Version: 2022-11-28" \
-              "/repos/$REPO/code-scanning/alerts/$n/autofix/commits" \
-              -f target_ref="proposed-fixes" >/dev/null || true
+            if [ "$status" = "complete" ]; then
+              echo "Committing autofix for alert #$n..."
+              timeout 30s gh api -X POST -H "X-GitHub-Api-Version: 2022-11-28" \
+                "/repos/$REPO/code-scanning/alerts/$n/autofix/commits" \
+                -f target_ref="proposed-fixes" >/dev/null 2>&1 || {
+                echo "⚠️  Failed to commit autofix for alert #$n"
+              }
+            fi
           done
+
+          echo "✅ Autofix processing complete"
 
       - name: Push proposed-fixes branch
         run: |

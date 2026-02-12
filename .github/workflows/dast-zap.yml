@@ -46,9 +46,32 @@ jobs:
           kill $(cat flask.pid) || true
         fi
 
+    - name: List generated reports
+      if: always()
+      run: |
+        echo "Generated ZAP reports:"
+        ls -lh report* 2>/dev/null || echo "No report files found"
+
+    - name: Upload ZAP Scan Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: zap-scan-reports
+        path: |
+          report_html.html
+          report_json.json
+          report_md.md
+        if-no-files-found: warn
+
     - name: Generate Scan Summary
       if: always()
       run: |
         echo "## 🛡️ OWASP ZAP DAST Scan Complete" >> $GITHUB_STEP_SUMMARY
         echo "Target: http://localhost:5000" >> $GITHUB_STEP_SUMMARY
-        echo "ZAP reports are available in the workflow artifacts" >> $GITHUB_STEP_SUMMARY
+        if [ -f report_md.md ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Scan Results Preview:" >> $GITHUB_STEP_SUMMARY
+          head -30 report_md.md >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📥 Download full reports from workflow artifacts" >> $GITHUB_STEP_SUMMARY

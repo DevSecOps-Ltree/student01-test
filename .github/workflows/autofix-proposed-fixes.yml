@@ -125,69 +125,127 @@ jobs:
           http_code="$(echo "$alerts" | grep "^HTTP_CODE:" | cut -d: -f2)"
           echo "Response HTTP code: $http_code" | tee -a autofix-debug-logs/api-calls.log
 
-          nums="$(echo "$alerts_json" | jq -r '.[].number' 2>/dev/null || echo "")"
+          # Filter to high-value alerts only (error/warning severity) and limit to 3
+          # This avoids rate limiting (10 requests per window) and focuses on real security issues
+          nums="$(echo "$alerts_json" | jq -r '.[] | select(.rule.severity=="error" or .rule.severity=="warning") | .number' 2>/dev/null | head -n 3 || echo "")"
+
           if [ -z "$nums" ]; then
-            echo "⚠️  No open code scanning alerts found or API unavailable." | tee -a autofix-debug-logs/api-calls.log
-            echo "Copilot Autofix requires GitHub Advanced Security and may not be available for this repository." | tee -a autofix-debug-logs/api-calls.log
+            echo "⚠️  No high-severity code scanning alerts found (error/warning level)." | tee -a autofix-debug-logs/api-calls.log
+            echo "Copilot Autofix focuses on actionable security findings." | tee -a autofix-debug-logs/api-calls.log
             echo "Full response saved to autofix-debug-logs/01-list-alerts-response.txt"
             exit 0
           fi
 
-          echo "Found $(echo "$nums" | wc -w) alert(s) to process" | tee -a autofix-debug-logs/api-calls.log
+          total_alerts="$(echo "$alerts_json" | jq -r '.[].number' 2>/dev/null | wc -l)"
+          filtered_count="$(echo "$nums" | wc -w)"
+          echo "Found $total_alerts total alert(s), processing top $filtered_count high-severity alert(s)" | tee -a autofix-debug-logs/api-calls.log
 
           for n in $nums; do
             echo "" | tee -a autofix-debug-logs/api-calls.log
             echo "=== Processing Alert #$n ===" | tee -a autofix-debug-logs/api-calls.log
 
-            # Request autofix (no-op if unsupported)
-            echo "API Call: POST /repos/$REPO/code-scanning/alerts/$n/autofix" | tee -a autofix-debug-logs/api-calls.log
-            autofix_request_response="$(timeout 30s curl -v -X POST \
+            # Step 1: Check if autofix already exists (avoids unnecessary POSTs)
+            echo "API Call: GET /repos/$REPO/code-scanning/alerts/$n/autofix (check existing)" | tee -a autofix-debug-logs/api-calls.log
+            existing_response="$(timeout 10s curl -v \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
-              2>&1 | tee autofix-debug-logs/02-alert-${n}-autofix-request.txt || echo "FAILED")"
+              2>&1 | tee autofix-debug-logs/02-alert-${n}-check-existing.txt)"
 
-            autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
-            echo "Autofix request HTTP code: $autofix_http_code" | tee -a autofix-debug-logs/api-calls.log
+            existing_http_code="$(echo "$existing_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+            existing_status="$(echo "$existing_response" | grep "^{" | jq -r '.status // empty' 2>/dev/null)"
 
-            if echo "$autofix_request_response" | grep -q "FAILED"; then
-              echo "⚠️  Autofix request failed or timed out for alert #$n" | tee -a autofix-debug-logs/api-calls.log
-              continue
-            fi
+            echo "Existing fix check: HTTP $existing_http_code, status=$existing_status" | tee -a autofix-debug-logs/api-calls.log
 
-            # Poll status (~2 mins max with timeouts)
-            status="unknown"
-            for i in $(seq 1 12); do
-              echo "API Call: GET /repos/$REPO/code-scanning/alerts/$n/autofix (poll $i/12)" | tee -a autofix-debug-logs/api-calls.log
-              status_response="$(timeout 10s curl -v \
+            # If 200 and status is success, go straight to commit
+            if [ "$existing_http_code" = "200" ] && [ "$existing_status" = "success" ]; then
+              echo "✅ Autofix already exists for alert #$n, proceeding to commit" | tee -a autofix-debug-logs/api-calls.log
+              status="complete"
+            # If 404 with "No suggested fix found", this alert isn't supported - skip it
+            elif [ "$existing_http_code" = "404" ]; then
+              if echo "$existing_response" | grep -q "No suggested fix found"; then
+                echo "ℹ️  No suggested fix available for alert #$n (not all CodeQL findings have autofix support) - skipping" | tee -a autofix-debug-logs/api-calls.log
+                continue
+              fi
+
+              # 404 but no fix found message - try to request one
+              echo "Requesting new autofix for alert #$n..." | tee -a autofix-debug-logs/api-calls.log
+
+              # Step 2: Request autofix generation
+              echo "API Call: POST /repos/$REPO/code-scanning/alerts/$n/autofix" | tee -a autofix-debug-logs/api-calls.log
+              autofix_request_response="$(timeout 30s curl -v -X POST \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 -H "Accept: application/vnd.github+json" \
                 "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
-                2>&1 | tee autofix-debug-logs/03-alert-${n}-status-poll-${i}.txt || echo "{\"status\":\"unavailable\"}")"
+                2>&1 | tee autofix-debug-logs/03-alert-${n}-autofix-request.txt || echo "FAILED")"
 
-              status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
-              status_body="$(echo "$status_response" | grep -v "^[<>*]" | grep -v "^{" | tail -1)"
-              status="$(echo "$status_response" | grep "^{" | jq -r '.status // "unavailable"' 2>/dev/null || echo "unavailable")"
+              autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+              echo "Autofix request HTTP code: $autofix_http_code" | tee -a autofix-debug-logs/api-calls.log
 
-              echo "  Poll $i/12: HTTP $status_http_code, status=$status" | tee -a autofix-debug-logs/api-calls.log
-
-              if [ "$status" = "complete" ]; then
-                echo "✅ Autofix complete for alert #$n" | tee -a autofix-debug-logs/api-calls.log
-                break
-              elif [ "$status" = "failed" ]; then
-                echo "❌ Autofix failed for alert #$n" | tee -a autofix-debug-logs/api-calls.log
-                break
-              elif [ "$status" = "unavailable" ] || [ "$status" = "timeout" ]; then
-                echo "⚠️  Autofix unavailable or timed out for alert #$n" | tee -a autofix-debug-logs/api-calls.log
-                break
+              # Handle rate limiting (403 with rate limit message)
+              if [ "$autofix_http_code" = "403" ]; then
+                if echo "$autofix_request_response" | grep -q "rate limit exceeded"; then
+                  rate_reset="$(echo "$autofix_request_response" | grep -i "x-ratelimit-reset:" | awk '{print $3}' | tr -d '\r')"
+                  if [ -n "$rate_reset" ]; then
+                    now="$(date +%s)"
+                    sleep_time=$((rate_reset - now + 2))
+                    if [ "$sleep_time" -gt 0 ] && [ "$sleep_time" -lt 300 ]; then
+                      echo "⏳ Rate limited, sleeping ${sleep_time}s until reset..." | tee -a autofix-debug-logs/api-calls.log
+                      sleep "$sleep_time"
+                      # Retry once after rate limit
+                      echo "Retrying after rate limit..." | tee -a autofix-debug-logs/api-calls.log
+                      autofix_request_response="$(timeout 30s curl -v -X POST \
+                        -H "Authorization: Bearer $GH_TOKEN" \
+                        -H "X-GitHub-Api-Version: 2022-11-28" \
+                        -H "Accept: application/vnd.github+json" \
+                        "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
+                        2>&1 | tee -a autofix-debug-logs/03-alert-${n}-autofix-request.txt || echo "FAILED")"
+                      autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+                    fi
+                  fi
+                fi
               fi
 
-              sleep 10
-            done
+              if echo "$autofix_request_response" | grep -q "FAILED" || [ "$autofix_http_code" != "200" ]; then
+                echo "⚠️  Autofix request failed for alert #$n (HTTP $autofix_http_code)" | tee -a autofix-debug-logs/api-calls.log
+                continue
+              fi
 
-            # Commit autofix to proposed-fixes (no-op if no fix available)
+              # Step 3: Poll for completion (shorter window since we filtered to good alerts)
+              status="unknown"
+              for i in $(seq 1 12); do
+                echo "API Call: GET /repos/$REPO/code-scanning/alerts/$n/autofix (poll $i/12)" | tee -a autofix-debug-logs/api-calls.log
+                status_response="$(timeout 10s curl -v \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
+                  2>&1 | tee autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt || echo "{\"status\":\"error\"}")"
+
+                status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+                status="$(echo "$status_response" | grep "^{" | jq -r '.status // "error"' 2>/dev/null || echo "error")"
+
+                echo "  Poll $i/12: HTTP $status_http_code, status=$status" | tee -a autofix-debug-logs/api-calls.log
+
+                if [ "$status" = "success" ] || [ "$status" = "complete" ]; then
+                  echo "✅ Autofix complete for alert #$n" | tee -a autofix-debug-logs/api-calls.log
+                  status="complete"
+                  break
+                elif [ "$status" = "failed" ] || [ "$status" = "error" ]; then
+                  echo "❌ Autofix generation failed for alert #$n" | tee -a autofix-debug-logs/api-calls.log
+                  break
+                fi
+
+                sleep 10
+              done
+            else
+              echo "⚠️  Unexpected response checking existing fix: HTTP $existing_http_code" | tee -a autofix-debug-logs/api-calls.log
+              continue
+            fi
+
+            # Step 4: Commit autofix to proposed-fixes branch
             if [ "$status" = "complete" ]; then
               echo "API Call: POST /repos/$REPO/code-scanning/alerts/$n/autofix/commits" | tee -a autofix-debug-logs/api-calls.log
               commit_response="$(timeout 30s curl -v -X POST \
@@ -197,13 +255,15 @@ jobs:
                 -H "Content-Type: application/json" \
                 -d "{\"target_ref\":\"proposed-fixes\"}" \
                 "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix/commits" \
-                2>&1 | tee autofix-debug-logs/04-alert-${n}-commit.txt || echo "FAILED")"
+                2>&1 | tee autofix-debug-logs/05-alert-${n}-commit.txt || echo "FAILED")"
 
               commit_http_code="$(echo "$commit_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
               echo "Commit HTTP code: $commit_http_code" | tee -a autofix-debug-logs/api-calls.log
 
-              if echo "$commit_response" | grep -q "FAILED"; then
-                echo "⚠️  Failed to commit autofix for alert #$n" | tee -a autofix-debug-logs/api-calls.log
+              if [ "$commit_http_code" = "200" ] || [ "$commit_http_code" = "201" ]; then
+                echo "✅ Successfully committed autofix for alert #$n to proposed-fixes branch" | tee -a autofix-debug-logs/api-calls.log
+              else
+                echo "⚠️  Failed to commit autofix for alert #$n (HTTP $commit_http_code)" | tee -a autofix-debug-logs/api-calls.log
               fi
             fi
           done

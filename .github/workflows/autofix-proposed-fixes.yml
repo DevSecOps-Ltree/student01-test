@@ -108,45 +108,79 @@ jobs:
         run: |
           set -euo pipefail
 
-          # List open code scanning alerts (CodeQL lives here)
-          alerts="$(timeout 30s gh api -H "X-GitHub-Api-Version: 2022-11-28" \
-            "/repos/$REPO/code-scanning/alerts?state=open&per_page=100" 2>/dev/null || echo "[]")"
+          # Create debug log directory
+          mkdir -p autofix-debug-logs
 
-          nums="$(echo "$alerts" | jq -r '.[].number' 2>/dev/null || echo "")"
+          # List open code scanning alerts (CodeQL lives here)
+          echo "=== API Call: GET /repos/$REPO/code-scanning/alerts ===" | tee -a autofix-debug-logs/api-calls.log
+          alerts="$(timeout 30s curl -s -w "\nHTTP_CODE:%{http_code}\n" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/code-scanning/alerts?state=open&per_page=100" \
+            2>&1 | tee autofix-debug-logs/01-list-alerts-response.txt || echo "[]")"
+
+          # Extract just the JSON body (before HTTP_CODE line)
+          alerts_json="$(echo "$alerts" | sed '/^HTTP_CODE:/Q')"
+          http_code="$(echo "$alerts" | grep "^HTTP_CODE:" | cut -d: -f2)"
+          echo "Response HTTP code: $http_code" | tee -a autofix-debug-logs/api-calls.log
+
+          nums="$(echo "$alerts_json" | jq -r '.[].number' 2>/dev/null || echo "")"
           if [ -z "$nums" ]; then
-            echo "⚠️  No open code scanning alerts found or API unavailable."
-            echo "Copilot Autofix requires GitHub Advanced Security and may not be available for this repository."
+            echo "⚠️  No open code scanning alerts found or API unavailable." | tee -a autofix-debug-logs/api-calls.log
+            echo "Copilot Autofix requires GitHub Advanced Security and may not be available for this repository." | tee -a autofix-debug-logs/api-calls.log
+            echo "Full response saved to autofix-debug-logs/01-list-alerts-response.txt"
             exit 0
           fi
 
-          echo "Found $(echo "$nums" | wc -w) alert(s) to process"
+          echo "Found $(echo "$nums" | wc -w) alert(s) to process" | tee -a autofix-debug-logs/api-calls.log
 
           for n in $nums; do
-            echo "=== Processing Alert #$n ==="
+            echo "" | tee -a autofix-debug-logs/api-calls.log
+            echo "=== Processing Alert #$n ===" | tee -a autofix-debug-logs/api-calls.log
 
             # Request autofix (no-op if unsupported)
-            echo "Requesting autofix for alert #$n..."
-            timeout 30s gh api -X POST -H "X-GitHub-Api-Version: 2022-11-28" \
-              "/repos/$REPO/code-scanning/alerts/$n/autofix" >/dev/null 2>&1 || {
-              echo "⚠️  Autofix request failed or timed out for alert #$n (API may be unavailable)"
+            echo "API Call: POST /repos/$REPO/code-scanning/alerts/$n/autofix" | tee -a autofix-debug-logs/api-calls.log
+            autofix_request_response="$(timeout 30s curl -v -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
+              2>&1 | tee autofix-debug-logs/02-alert-${n}-autofix-request.txt || echo "FAILED")"
+
+            autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+            echo "Autofix request HTTP code: $autofix_http_code" | tee -a autofix-debug-logs/api-calls.log
+
+            if echo "$autofix_request_response" | grep -q "FAILED"; then
+              echo "⚠️  Autofix request failed or timed out for alert #$n" | tee -a autofix-debug-logs/api-calls.log
               continue
-            }
+            fi
 
             # Poll status (~2 mins max with timeouts)
             status="unknown"
             for i in $(seq 1 12); do
-              status="$(timeout 10s gh api -H "X-GitHub-Api-Version: 2022-11-28" \
-                "/repos/$REPO/code-scanning/alerts/$n/autofix" --jq '.status' 2>/dev/null || echo "unavailable")"
-              echo "  Poll $i/12: status=$status"
+              echo "API Call: GET /repos/$REPO/code-scanning/alerts/$n/autofix (poll $i/12)" | tee -a autofix-debug-logs/api-calls.log
+              status_response="$(timeout 10s curl -v \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
+                2>&1 | tee autofix-debug-logs/03-alert-${n}-status-poll-${i}.txt || echo "{\"status\":\"unavailable\"}")"
+
+              status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+              status_body="$(echo "$status_response" | grep -v "^[<>*]" | grep -v "^{" | tail -1)"
+              status="$(echo "$status_response" | grep "^{" | jq -r '.status // "unavailable"' 2>/dev/null || echo "unavailable")"
+
+              echo "  Poll $i/12: HTTP $status_http_code, status=$status" | tee -a autofix-debug-logs/api-calls.log
 
               if [ "$status" = "complete" ]; then
-                echo "✅ Autofix complete for alert #$n"
+                echo "✅ Autofix complete for alert #$n" | tee -a autofix-debug-logs/api-calls.log
                 break
               elif [ "$status" = "failed" ]; then
-                echo "❌ Autofix failed for alert #$n"
+                echo "❌ Autofix failed for alert #$n" | tee -a autofix-debug-logs/api-calls.log
                 break
               elif [ "$status" = "unavailable" ] || [ "$status" = "timeout" ]; then
-                echo "⚠️  Autofix unavailable or timed out for alert #$n"
+                echo "⚠️  Autofix unavailable or timed out for alert #$n" | tee -a autofix-debug-logs/api-calls.log
                 break
               fi
 
@@ -155,16 +189,37 @@ jobs:
 
             # Commit autofix to proposed-fixes (no-op if no fix available)
             if [ "$status" = "complete" ]; then
-              echo "Committing autofix for alert #$n..."
-              timeout 30s gh api -X POST -H "X-GitHub-Api-Version: 2022-11-28" \
-                "/repos/$REPO/code-scanning/alerts/$n/autofix/commits" \
-                -f target_ref="proposed-fixes" >/dev/null 2>&1 || {
-                echo "⚠️  Failed to commit autofix for alert #$n"
-              }
+              echo "API Call: POST /repos/$REPO/code-scanning/alerts/$n/autofix/commits" | tee -a autofix-debug-logs/api-calls.log
+              commit_response="$(timeout 30s curl -v -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "Accept: application/vnd.github+json" \
+                -H "Content-Type: application/json" \
+                -d "{\"target_ref\":\"proposed-fixes\"}" \
+                "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix/commits" \
+                2>&1 | tee autofix-debug-logs/04-alert-${n}-commit.txt || echo "FAILED")"
+
+              commit_http_code="$(echo "$commit_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+              echo "Commit HTTP code: $commit_http_code" | tee -a autofix-debug-logs/api-calls.log
+
+              if echo "$commit_response" | grep -q "FAILED"; then
+                echo "⚠️  Failed to commit autofix for alert #$n" | tee -a autofix-debug-logs/api-calls.log
+              fi
             fi
           done
 
-          echo "✅ Autofix processing complete"
+          echo "" | tee -a autofix-debug-logs/api-calls.log
+          echo "✅ Autofix processing complete" | tee -a autofix-debug-logs/api-calls.log
+          echo "" | tee -a autofix-debug-logs/api-calls.log
+          echo "Debug logs saved in autofix-debug-logs/ directory" | tee -a autofix-debug-logs/api-calls.log
+
+      - name: Upload Autofix Debug Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autofix-debug-logs
+          path: autofix-debug-logs/
+          if-no-files-found: warn
 
       - name: Push proposed-fixes branch
         run: |

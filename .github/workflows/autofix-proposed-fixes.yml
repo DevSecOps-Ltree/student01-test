@@ -153,7 +153,7 @@ jobs:
               "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
               2>&1 | tee autofix-debug-logs/02-alert-${n}-check-existing.txt)"
 
-            existing_http_code="$(echo "$existing_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+            existing_http_code="$(echo "$existing_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
             # Extract JSON body (everything after the blank line that separates headers from body)
             existing_body="$(echo "$existing_response" | sed -n '/^$/,$ p' | grep "{" | head -1)"
             existing_status="$(echo "$existing_body" | jq -r '.status // empty' 2>/dev/null || echo "")"
@@ -183,7 +183,7 @@ jobs:
                 "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
                 2>&1 | tee autofix-debug-logs/03-alert-${n}-autofix-request.txt || echo "FAILED")"
 
-              autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+              autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
               echo "Autofix request HTTP code: $autofix_http_code" | tee -a autofix-debug-logs/api-calls.log
 
               # Handle rate limiting (403 with rate limit message)
@@ -204,7 +204,7 @@ jobs:
                         -H "Accept: application/vnd.github+json" \
                         "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
                         2>&1 | tee -a autofix-debug-logs/03-alert-${n}-autofix-request.txt || echo "FAILED")"
-                      autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+                      autofix_http_code="$(echo "$autofix_request_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
                     fi
                   fi
                 fi
@@ -226,7 +226,7 @@ jobs:
                   "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix" \
                   2>&1 | tee autofix-debug-logs/04-alert-${n}-status-poll-${i}.txt || echo "{\"status\":\"error\"}")"
 
-                status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $3}' || echo "000")"
+                status_http_code="$(echo "$status_response" | grep "< HTTP" | tail -1 | awk '{print $NF}' || echo "000")"
                 # Extract JSON body (everything after blank line)
                 status_body="$(echo "$status_response" | sed -n '/^$/,$ p' | grep "{" | head -1)"
                 status="$(echo "$status_body" | jq -r '.status // "error"' 2>/dev/null || echo "error")"
@@ -261,7 +261,7 @@ jobs:
                 "https://api.github.com/repos/$REPO/code-scanning/alerts/$n/autofix/commits" \
                 2>&1 | tee autofix-debug-logs/05-alert-${n}-commit.txt || echo "FAILED")"
 
-              commit_http_code="$(echo "$commit_response" | grep "< HTTP" | tail -1 | awk '{print $3}')"
+              commit_http_code="$(echo "$commit_response" | grep "< HTTP" | tail -1 | awk '{print $NF}')"
               echo "Commit HTTP code: $commit_http_code" | tee -a autofix-debug-logs/api-calls.log
 
               if [ "$commit_http_code" = "200" ] || [ "$commit_http_code" = "201" ]; then

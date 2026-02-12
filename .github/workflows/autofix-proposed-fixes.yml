@@ -287,10 +287,12 @@ jobs:
           path: autofix-debug-logs/
           if-no-files-found: warn
 
-      - name: Push proposed-fixes branch
+      - name: Fetch updated proposed-fixes branch
         run: |
           set -euo pipefail
-          git push -f origin proposed-fixes
+          # The autofix/commits API already pushed to the branch
+          # Fetch the updated branch to have it locally for PR comparison
+          git fetch origin proposed-fixes:proposed-fixes
 
       - name: Create or update PR
         env:

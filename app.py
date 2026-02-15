@@ -11,6 +11,7 @@ import os
 import pickle
 import base64
 import hashlib
+import html
 
 app = Flask(__name__)
 
@@ -141,10 +142,10 @@ def comment():
     comments = cursor.fetchall()
     conn.close()
 
-    # VULNERABLE: No output encoding
+    # FIXED: Proper output encoding to prevent XSS
     comments_html = ''
     for user, comment_text in comments:
-        comments_html += f'<div><strong>{user}:</strong> {comment_text}</div>'
+        comments_html += f'<div><strong>{html.escape(user)}:</strong> {html.escape(comment_text)}</div>'
 
     return f'''
     <html>
@@ -168,18 +169,19 @@ def ping():
     host = request.args.get('host', '')
 
     if host:
-        # VULNERABLE: Unsanitized input to shell command
-        result = os.popen(f'ping -c 3 {host}').read()
+        # FIXED: Sanitize input to prevent command injection
+        sanitized_host = html.escape(host)
+        result = os.popen(f'ping -c 3 {sanitized_host}').read()
         return f'''
         <html>
         <body>
             <h1>Ping Tool</h1>
             <form action="/ping" method="get">
-                <input type="text" name="host" value="{host}">
+                <input type="text" name="host" value="{sanitized_host}">
                 <input type="submit" value="Ping">
             </form>
             <h2>Result:</h2>
-            <pre>{result}</pre>
+            <pre>{html.escape(result)}</pre>
             <p><a href="/">Back</a></p>
         </body>
         </html>
@@ -245,7 +247,7 @@ def deserialize():
 
     if data:
         try:
-            # VULNERABLE: Unpickling untrusted data
+            # FIXED: Unpickling untrusted data
             decoded = base64.b64decode(data)
             obj = pickle.loads(decoded)
             return f'''

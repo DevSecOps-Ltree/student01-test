@@ -445,13 +445,19 @@ jobs:
       - name: Push proposed-fixes branch
         run: |
           set -euo pipefail
-          # Check if there are local commits to push
-          if git log origin/proposed-fixes..proposed-fixes --oneline 2>/dev/null | grep -q .; then
-            echo "Pushing AI-generated fixes to remote..."
-            # Use force-with-lease since we reset the branch at the start
-            git push --force-with-lease origin proposed-fixes
+          # Check if there are local commits to push.
+          # Handle the case where origin/proposed-fixes doesn't exist yet
+          # (when Copilot API made no commits and no AI fallback commits were generated).
+          if git show-ref --verify --quiet refs/remotes/origin/proposed-fixes; then
+            compare_ref="origin/proposed-fixes"
           else
-            echo "No local commits to push (Copilot API handled it)"
+            compare_ref="origin/${{ github.event.repository.default_branch }}"
+          fi
+          if git log "$compare_ref..proposed-fixes" --oneline 2>/dev/null | grep -q .; then
+            echo "Pushing AI-generated fixes to remote..."
+            git push origin proposed-fixes
+          else
+            echo "No local commits to push (Copilot API handled it, or no fixes generated)"
           fi
 
       - name: Create or update PR
@@ -461,6 +467,13 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+
+          # If proposed-fixes branch doesn't exist on remote, no fixes were generated — exit cleanly
+          if ! gh api "/repos/$REPO/branches/proposed-fixes" > /dev/null 2>&1; then
+            echo "ℹ️  proposed-fixes branch doesn't exist on remote — no fixes were generated"
+            echo "Skipping PR creation"
+            exit 0
+          fi
 
           # Check if there are any differences between branches
           comparison="$(gh api "/repos/$REPO/compare/$BASE...proposed-fixes" --jq '.ahead_by')"

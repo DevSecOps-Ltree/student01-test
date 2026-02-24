@@ -320,10 +320,10 @@ jobs:
                 rm "${file_path}.backup"
                 echo "  ✅ Successfully committed AI-generated fix for alert #$n" | tee -a autofix-debug-logs/api-calls.log
                 successful_fixes=$((successful_fixes + 1))
-                status="complete"
+                continue  # AI fix applied — skip requesting Copilot autofix for same alert
               fi
 
-              # 404 but no fix found message - try to request one
+              # AI fallback didn't apply (or wasn't triggered) — try requesting Copilot autofix
               echo "Requesting new autofix for alert #$n..." | tee -a autofix-debug-logs/api-calls.log
 
               # Step 2: Request autofix generation
@@ -460,9 +460,14 @@ jobs:
 
           if git log "$compare_ref..proposed-fixes" --oneline 2>/dev/null | grep -q .; then
             echo "Rebasing local AI-generated fixes on top of remote state..."
-            git rebase "$compare_ref"
-            echo "Pushing to remote..."
-            git push origin proposed-fixes
+            if git rebase "$compare_ref"; then
+              echo "Pushing to remote..."
+              git push origin proposed-fixes
+            else
+              git rebase --abort
+              echo "⚠️ Rebase conflict between local AI fixes and Copilot's remote commits."
+              echo "Copilot's fixes are already on remote — PR will be created from those."
+            fi
           else
             echo "No local commits to push (Copilot API handled it, or no fixes generated)"
           fi

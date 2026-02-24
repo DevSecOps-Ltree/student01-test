@@ -100,6 +100,11 @@ jobs:
           git checkout -B proposed-fixes origin/${{ github.event.repository.default_branch }}
           git config user.name "autofix-bot"
           git config user.email "autofix-bot@users.noreply.github.com"
+          # Force-push the baseline to remote NOW, before Copilot commits.
+          # This ensures Copilot's API commits land on a branch based on current main,
+          # the same starting point as our local branch — preventing add/add conflicts
+          # caused by stale origin/proposed-fixes history from previous runs.
+          git push --force origin proposed-fixes
 
       - name: Generate + commit Copilot Autofix for open code scanning alerts
         continue-on-error: true
@@ -445,31 +450,24 @@ jobs:
       - name: Push proposed-fixes branch
         run: |
           set -euo pipefail
-          # Fetch first — Copilot API may have committed directly to origin/proposed-fixes
-          # while we were working locally (AI fallback commits). Without fetching, our
-          # local ref for origin/proposed-fixes is stale and the push will be rejected
-          # as non-fast-forward.
+          # Fetch to get Copilot's commits (committed directly to origin/proposed-fixes
+          # by the API while the AI fallback was running locally).
           git fetch origin
 
-          # Determine what to compare against
-          if git show-ref --verify --quiet refs/remotes/origin/proposed-fixes; then
-            compare_ref="origin/proposed-fixes"
-          else
-            compare_ref="origin/${{ github.event.repository.default_branch }}"
-          fi
-
-          if git log "$compare_ref..proposed-fixes" --oneline 2>/dev/null | grep -q .; then
-            echo "Rebasing local AI-generated fixes on top of remote state..."
-            if git rebase "$compare_ref"; then
-              echo "Pushing to remote..."
+          # Both Copilot and AI started from the same base (we force-pushed the baseline
+          # in the previous step), so this rebase should be conflict-free: Copilot fixed
+          # some alerts, AI fixed others, they touch different parts of the code.
+          if git log "origin/proposed-fixes..proposed-fixes" --oneline 2>/dev/null | grep -q .; then
+            echo "Rebasing local AI fixes on top of Copilot's commits..."
+            if git rebase origin/proposed-fixes; then
               git push origin proposed-fixes
             else
               git rebase --abort
-              echo "⚠️ Rebase conflict between local AI fixes and Copilot's remote commits."
-              echo "Copilot's fixes are already on remote — PR will be created from those."
+              echo "⚠️ Unexpected rebase conflict — Copilot's fixes are already on remote."
+              echo "PR will be created from Copilot's commits."
             fi
           else
-            echo "No local commits to push (Copilot API handled it, or no fixes generated)"
+            echo "No local AI commits to push (Copilot handled all fixes, or no fixes generated)"
           fi
 
       - name: Create or update PR
@@ -479,13 +477,6 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-
-          # If proposed-fixes branch doesn't exist on remote, no fixes were generated — exit cleanly
-          if ! gh api "/repos/$REPO/branches/proposed-fixes" > /dev/null 2>&1; then
-            echo "ℹ️  proposed-fixes branch doesn't exist on remote — no fixes were generated"
-            echo "Skipping PR creation"
-            exit 0
-          fi
 
           # Check if there are any differences between branches
           comparison="$(gh api "/repos/$REPO/compare/$BASE...proposed-fixes" --jq '.ahead_by')"
